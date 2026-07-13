@@ -1,0 +1,226 @@
+# Example configuration for the load balancer.
+#
+# This file exercises every supported field: global
+# settings, multiple listeners across all supported protocols,
+# multiple backend pools with weighted backends, load balancing
+# algorithm selection, health check configuration, HTTP host/path/
+# header-based routing, cookie-based sticky sessions, weighted
+# canary traffic splitting, rate limiting, circuit breaking, and the
+# admin/dashboard control plane.
+
+global:
+  # One of: debug, info, warn, error.
+  log_level: info
+  # How long to wait for in-flight connections to drain on shutdown
+  # before forcing an exit. Accepts any value parseable by Go's
+  # time.ParseDuration, e.g. "10s", "1m30s".
+  shutdown_timeout: 15s
+
+  admin:
+    enabled: true
+    address: "127.0.0.1:9091"
+    # The token is read from the environment variable named here.
+    # Never embed the actual token in a config file.
+    token_env: HOOT_LB_ADMIN_TOKEN
+    max_concurrent_requests: 10
+
+listeners:
+  # An HTTP listener with host/path/header routing. Requests matching
+  # specific routes are dispatched to different backend pools.
+  # Unmatched requests fall back to the listener's default pool.
+  - name: web
+    address: "0.0.0.0:8080"
+    protocol: http
+    pool: web_pool
+    routes:
+      - host: api.example.com
+        path_prefix: /v2
+        pool: api_pool
+      - path_prefix: /static
+        pool: static_pool
+      # Header-based routing: requests with X-Beta-User: true go to
+      # the beta pool, regardless of path prefix.
+      - path_prefix: /beta
+        header:
+          name: X-Beta-User
+          value: "true"
+        pool: beta_pool
+      # Weighted canary split: 90% of /checkout traffic goes to the
+      # stable pool, 10% to the canary pool. Per-request random
+      # selection, not sticky across requests.
+      - path_prefix: /checkout
+        split:
+          - pool: checkout_stable
+            weight: 90
+          - pool: checkout_canary
+            weight: 10
+
+  # An HTTP listener with TLS termination. The proxy decrypts
+  # incoming TLS traffic and forwards plain HTTP to backends.
+  - name: web_tls
+    address: "0.0.0.0:8443"
+    protocol: http
+    pool: web_pool
+    tls:
+      mode: terminate
+      certificates:
+        - host: "example.com"
+          cert_file: "cert.pem"
+          key_file: "key.pem"
+        - host: ""                   # empty host = default/fallback cert
+          cert_file: "cert.pem"      # served when SNI is absent or unmatched
+          key_file: "key.pem"
+
+  # An HTTP listener with per-client rate limiting.
+  - name: rate_limited
+    address: "0.0.0.0:8081"
+    protocol: http
+    pool: web_pool
+    rate_limit:
+      requests_per_second: 100
+      burst: 200
+      client_idle_eviction: 5m
+
+  # A raw TCP listener using least connections for backend selection.
+  - name: tcp_app
+    address: "0.0.0.0:9000"
+    protocol: tcp
+    pool: tcp_pool
+
+  # A TCP listener with TLS SNI passthrough.
+  - name: passthrough_tls
+    address: "0.0.0.0:9443"
+    protocol: tcp
+    pool: tcp_pool
+    tls:
+      mode: passthrough
+      routes:
+        - host: "a.example.com"
+          pool: api_pool
+        - host: "b.example.com"
+          pool: static_pool
+
+  # A UDP listener using round robin for backend selection.
+  - name: udp_app
+    address: "0.0.0.0:9001"
+    protocol: udp
+    pool: udp_pool
+
+pools:
+  # web_pool uses weighted round robin (the default when algorithm is
+  # omitted) with non-uniform weights. Health checking uses HTTP
+  # probes against a custom health endpoint.
+  - name: web_pool
+    algorithm: weighted_round_robin
+    backends:
+      - address: "10.0.0.1:8080"
+        weight: 5
+      - address: "10.0.0.2:8080"
+        weight: 3
+      - address: "10.0.0.3:8080"
+        # weight defaults to 1 when omitted.
+    health_check:
+      type: http
+      path: /healthz
+      interval: 5s
+      timeout: 2s
+      healthy_threshold: 2
+      unhealthy_threshold: 3
+
+  # api_pool serves the /v2 API traffic routed by host+path. Circuit
+  # breaking: after 5 consecutive failures the backend is skipped for
+  # 30s, then a single probe is allowed through in half-open.
+  - name: api_pool
+    algorithm: round_robin
+    backends:
+      - address: "10.0.0.10:8080"
+        weight: 1
+      - address: "10.0.0.11:8080"
+        weight: 1
+    health_check:
+      type: tcp
+    circuit_breaker:
+      failure_threshold: 5
+      open_duration: 30s
+      half_open_max_probes: 1
+
+  # beta_pool serves /beta traffic for beta users, identified by
+  # the X-Beta-User header.
+  - name: beta_pool
+    algorithm: round_robin
+    backends:
+      - address: "10.0.0.30:8080"
+        weight: 1
+      - address: "10.0.0.31:8080"
+        weight: 1
+    health_check:
+      type: tcp
+
+  # checkout_stable serves the stable checkout traffic.
+  - name: checkout_stable
+    algorithm: weighted_round_robin
+    backends:
+      - address: "10.0.0.40:8080"
+        weight: 5
+      - address: "10.0.0.41:8080"
+        weight: 5
+    # Sticky sessions: once a client hits a backend, subsequent
+    # requests go to the same backend (if still healthy) for 1 hour.
+    sticky:
+      cookie_name: hoot_lb_sticky
+      ttl: 1h
+    health_check:
+      type: tcp
+
+  # checkout_canary serves the canary checkout traffic (10%).
+  - name: checkout_canary
+    algorithm: round_robin
+    backends:
+      - address: "10.0.0.50:8080"
+        weight: 1
+    health_check:
+      type: tcp
+
+  # static_pool serves /static assets.
+  - name: static_pool
+    algorithm: round_robin
+    backends:
+      - address: "10.0.0.20:8080"
+        weight: 1
+      - address: "10.0.0.21:8080"
+        weight: 1
+
+  # tcp_pool uses least connections — good when backends have
+  # heterogeneous latency or capacity.
+  - name: tcp_pool
+    algorithm: least_conn
+    backends:
+      - address: "10.0.1.1:9000"
+        weight: 1
+      - address: "10.0.1.2:9000"
+        weight: 1
+    health_check:
+      type: tcp
+
+  # udp_pool uses plain round robin (unweighted).
+  - name: udp_pool
+    algorithm: round_robin
+    backends:
+      - address: "10.0.2.1:9001"
+        weight: 1
+    health_check:
+      type: none
+
+  # Example: DNS-discovered pool (uncomment to use). Discovered
+  # backends default to weight 1; weights are effectively uniform
+  # even with weighted_round_robin.
+  # - name: discovered_pool
+  #   algorithm: round_robin
+  #   discovery:
+  #     type: dns
+  #     dns:
+  #       host: "backend.service.consul"
+  #       port: 8080
+  #       refresh_interval: 30s
+  #   health_check:
+  #     type: tcp

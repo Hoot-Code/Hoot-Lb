@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hoot-Lb Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Hoot-Lb <span class="sub">dashboard</span></h1>
+  <div id="status" class="status status-disconnected">disconnected</div>
+</header>
+
+<section id="token-gate" class="card hidden">
+  <form id="token-form">
+    <label for="token-input">Admin bearer token</label>
+    <input id="token-input" type="password" autocomplete="off" placeholder="paste the admin API token">
+    <button type="submit">Connect</button>
+  </form>
+  <p class="hint">
+    Stored only in this tab's session storage — never persisted across
+    browser restarts. The same token is required for the admin REST
+    API.
+  </p>
+  <p id="token-error" class="error hidden">Connection rejected — check the token and try again.</p>
+</section>
+
+<main id="app" class="hidden">
+  <table id="pools-table">
+    <thead>
+      <tr>
+        <th>Pool</th>
+        <th>Algorithm</th>
+        <th>Backend</th>
+        <th>Weight</th>
+        <th>State</th>
+        <th>Active conns</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="pools-body"></tbody>
+  </table>
+  <p id="empty" class="hint hidden">No pools configured.</p>
+  <p class="hint" id="updated"></p>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
